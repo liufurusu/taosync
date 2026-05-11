@@ -133,31 +133,58 @@ class AlistClient:
                     return
             self.waits[pathFirst] = time.time()
 
-    def fileListApi(self, path, useCache=0, scanInterval=0, spec=None, rootPath=None):
+    def fileListApi(self, path, useCache=0, scanInterval=0, spec=None, rootPath=None, destPath=None):
         """
         目录列表
         :param path: 目录，以/开头并以/结尾
         :param useCache: 是否使用缓存，0-不使用，1-使用
         :param scanInterval: 目录扫描间隔，单位秒
         :param spec: 排除项规则
+        :param rootPath: 同步根目录
+        :param destPath: 目标目录（用于检查 .cas 标记文件），可选
         :return: {
             "test1-1/": {},  # key以/结尾表示目录
             "test1.txt": 4  # 不以/结尾，表示文件，存文件大小
         }
-        :param rootPath: 同步根目录
         """
         self.checkWait(path, scanInterval)
         res = self.post('/api/fs/list', data={
             'path': path,
             'refresh': useCache != 1
         })['content']
+        
         if res is not None:
-            rts = {
-                f"{item['name']}/" if item['is_dir'] else item['name']: {} if item['is_dir']
-                else item['size'] for item in res
-            }
+            rts = {}
+            # 如果提供了 destPath，提前获取目标目录的文件列表（优化性能）
+            dest_names = None
+            if destPath is not None:
+                try:
+                    dest_res = self.post('/api/fs/list', data={
+                        'path': destPath,
+                        'refresh': False
+                    })['content']
+                    if dest_res is not None:
+                        dest_names = {f['name'] for f in dest_res}
+                except Exception:
+                    pass  # 获取失败则不做过滤
+            
+            for item in res:
+                name = item['name']
+                is_dir = item['is_dir']
+                
+                # 如果是文件且提供了 destPath，检查目标是否存在 .cas 标记
+                if not is_dir and dest_names is not None:
+                    cas_name = name + '.cas'
+                    if cas_name in dest_names:
+                        # 已存在 .cas 标记，跳过此文件
+                        continue
+                
+                key = f"{name}/" if is_dir else name
+                value = {} if is_dir else item['size']
+                rts[key] = value
         else:
             rts = {}
+        
         if spec and rts:
             if rootPath is None:
                 rootPath = path
